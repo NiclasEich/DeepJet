@@ -24,15 +24,21 @@ train.compileModel(learningrate=0.003,
                    loss='categorical_crossentropy',
                    metrics=[tf.keras.metrics.Accuracy()])
     
-print(train.keras_model.summary())
+# print(train.keras_model.summary())
+# print("try to load model")
+
+# offline_model_path = "/afs/cern.ch/work/n/neich/public/offline_reproduction_model.h5"
+
+# train.loadModel( offline_model_path )
 #printLayerInfosAndWeights(train.keras_model)
 
-model,history = train.trainModel(nepochs=50,
+model,history = train.trainModel(nepochs=2500,
                                  batchsize=10000, 
-                                 stop_patience=300, 
+                                 stop_patience=100, 
                                  lr_factor=0.5, 
-                                 lr_patience=-1, 
+                                 lr_patience=10, 
                                  lr_epsilon=0.0001, 
                                  lr_cooldown=10, 
                                  lr_minimum=0.00001,
-                                 verbose=1,checkperiod=1)
+                                 verbose=1,
+                                 checkperiod=5)

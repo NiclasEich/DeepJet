@@ -1,19 +1,141 @@
 from DeepJetCore.TrainData import TrainData, fileTimeOut
 import numpy as np
+import uproot3 as u3
+import awkward as ak
+
+GLOBAL_PREFIX = ""
+
+def uproot_root2array(fname, treename, stop=None, branches=None):
+    dtypes = np.dtype( [(b, np.dtype("O")) for b in branches] )
+    if isinstance(fname, list):
+        fname = fname[0]
+    tree = u3.open(fname)[treename]
+
+    new_arr = np.empty( len(tree[branches[0]].array()), dtype=dtypes)
+
+    for branch in branches:
+        new_arr[branch] = np.array( ak.to_list( tree[branch].array() ), dtype="O") 
+
+    return new_arr
+
+def uproot_tree_to_numpy(fname, MeanNormTuple,inbranches_listlist, nMaxslist, nevents, treename="ttree", stop=None, branches=None):
+
+    # array = uproot_root2array(fname, treename, stop=stop, branches=branches)
+
+    # Read in total number of events
+    totallengthperjet = 0
+    for i in range(len(nMaxslist)):
+        if nMaxslist[i]>=0:
+            totallengthperjet+=len(inbranches_listlist[i])*nMaxslist[i]
+        else:
+            totallengthperjet+=len(inbranches_listlist[i]) #flat branch
+    # branches = [ak.fill_none(ak.pad_none(tree[barr, target=feature_length), 0.) for feature_length, arr in zip( nMaxslist, inbranches_listlist)]
+    tree = u3.open(fname)[treename]
+    branches = [ak.fill_none(ak.pad_none( tree[branch_name].array(), target=feature_length, axis=-1, clip=True if feature_length > 1 else False), 0.) for feature_length, branch_list in zip( nMaxslist, inbranches_listlist) for branch_name in branch_list]
+
+    branchnames = [n for names in inbranches_listlist for n in names]
+    feature_lenghts = [f for branches, f in zip(inbranches_listlist, nMaxslist) for _ in branches]
+    means = [m[0] for branches, m in zip(inbranches_listlist, MeanNormTuple) for _ in branches]
+    norms = [m[1] for branches, m in zip(inbranches_listlist, MeanNormTuple) for _ in branches]
+    print("Debugigng means and norms")
+    print(means)
+    print(norms)
+
+    print(branchnames)
+    branches_numpy = []
+    for br, brname, fl, mean, norm in zip(branches, branchnames, feature_lenghts, means, norms):
+        print("DBG {}".format(brname))
+        print(br)
+        print("Length: {}".format(len(br)))
+        if brname == "TagVarCSV_trackJetDistVal":
+            print("BONUS DEBUG!")
+            print("Min: {}, Max: {}".format( ak.min( ak.count(br, axis=-1)),ak.max( ak.count(br, axis=-1))))
+        if fl > 1:
+            # branches_numpy.append( (ak.to_numpy( br ) - mean) / norm)
+            branches_numpy.append( (ak.to_numpy( br ) - 0.) / 1.)
+        elif fl == 1:
+            # branches_numpy.append( (np.expand_dims( ak.to_numpy( br ), axis=-1) - mean)/norm  )
+            branches_numpy.append( (np.expand_dims( ak.to_numpy( br ), axis=-1) - 0.)/1.  )
+    print("FINISHED THIS LOOP, YOU ARE PERFECT! :) ")
+    
+    numpyarray = np.concatenate(branches_numpy, axis=-1)
+    print("\n"*5)
+    print("Some metrics about this numpy array")
+    print( np.mean(numpyarray, axis=0))
+    print( np.std(numpyarray, axis=0))
+    print("Normalize array")
+    numpyarray = (numpyarray - np.mean(numpyarray, axis=0) )/ np.std( numpyarray, axis=0)
+    print("Some metrics about this numpy array")
+    print( np.mean(numpyarray, axis=0))
+    print( np.std(numpyarray, axis=0))
+    return numpyarray
+
+
+
+def uproot_MeanNormZeroPad(Filename_in,MeanNormTuple,inbranches_listlist, nMaxslist,nevents):
+    # savely copy lists (pass by value)
+    import copy
+    inbranches_listlist=copy.deepcopy(inbranches_listlist)
+    nMaxslist=copy.deepcopy(nMaxslist)
+    
+    # Read in total number of events
+    totallengthperjet = 0
+    for i in range(len(nMaxslist)):
+        if nMaxslist[i]>=0:
+            totallengthperjet+=len(inbranches_listlist[i])*nMaxslist[i]
+        else:
+            totallengthperjet+=len(inbranches_listlist[i]) #flat branch
+
+    print("Total event-length per jet: {}".format(totallengthperjet))
+    
+    #shape could be more generic here... but must be passed to c module then
+    array = numpy.zeros((nevents,totallengthperjet) , dtype='float32')
+
+    # filling mean and normlist
+    normslist=[]
+    meanslist=[]
+    for inbranches in inbranches_listlist:
+        means=[]
+        norms=[]
+        for b in inbranches:
+            if MeanNormTuple is None:
+                means.append(0)
+                norms.append(1)
+            else:
+                means.append(MeanNormTuple[b][0])
+                norms.append(MeanNormTuple[b][1])
+        meanslist.append(means)
+        normslist.append(norms)
+
+    # now start filling the array
+
+
+def map_prefix(elements):
+    if isinstance(elements, list):
+        return list(map( lambda x: GLOBAL_PREFIX + x, elements))
+    elif isinstance(elements, tuple):
+        return tuple(map( lambda x: GLOBAL_PREFIX + x, elements))
+    elif isinstance(elements, (str)):
+        return GLOBAL_PREFIX + elements
+    elif isinstance(elements, bytes):
+        return GLOBAL_PREFIX + elements.decode("utf-8")
+    else:
+        print("Error, you gave >>{}<< which is unknown".format(elements))
+        raise NotImplementedError
 
 class TrainData_DF(TrainData):
     def __init__(self):
 
         TrainData.__init__(self)
 
-        self.truth_branches = ['isB','isBB','isGBB','isLeptonicB','isLeptonicB_C','isC','isGCC','isCC','isUD','isS','isG']
-        self.undefTruth=['isUndefined']
-        self.weightbranchX='jet_pt'
-        self.weightbranchY='jet_eta'
+        self.truth_branches = map_prefix(['Jet_isB','Jet_isBB','Jet_isGBB','Jet_isLeptonicB','Jet_isLeptonicB_C','Jet_isC','Jet_isGCC','Jet_isCC','Jet_isUD','Jet_isS','Jet_isG'])
+        self.undefTruth=['Jet_isUndefined']
+        self.weightbranchX=map_prefix('Jet_pt')
+        self.weightbranchY=map_prefix('Jet_eta')
         self.remove = True
-        self.referenceclass='isB'  #Choose 'flatten' for flat or one of the truth branch for ref
-        self.red_classes = ['cat_B','cat_C','cat_UDS','cat_G'] #Reduced classes (flat only)
-        self.truth_red_fusion = [('isB','isBB','isGBB','isLeptonicB','isLeptonicB_C'),('isC','isGCC','isCC'),('isUD','isS'),('isG')] #Indicate here how you are making the fusion of your truth branches to the reduced classes for the flat reweighting
+        self.referenceclass=map_prefix('Jet_isB')  #Choose 'flatten' for flat or one of the truth branch for ref
+        self.red_classes = map_prefix(['cat_B','cat_C','cat_UDS','cat_G']) #Reduced classes (flat only)
+        self.truth_red_fusion = map_prefix([('Jet_isB','Jet_isBB','Jet_isGBB','Jet_isLeptonicB','Jet_isLeptonicB_C'),('Jet_isC','Jet_isGCC','Jet_isCC'),('Jet_isUD','Jet_isS'),('Jet_isG')]) #Indicate here how you are making the fusion of your truth branches to the reduced classes for the flat reweighting
         self.class_weights = [1.00,1.00,2.50,5.00]  #Ratio between our reduced classes (flat only)
         self.weight_binX = np.array([
             10,25,30,35,40,45,50,60,75,100,
@@ -25,7 +147,7 @@ class TrainData_DF(TrainData):
             dtype=float
         )
 
-        self.global_branches = ['jet_pt', 'jet_eta',
+        self.global_branches = map_prefix(['Jet_pt', 'Jet_eta',
                                 'nCpfcand','nNpfcand',
                                 'nsv','npv',
                                 'TagVarCSV_trackSumJetEtRatio',
@@ -35,11 +157,11 @@ class TrainData_DF(TrainData):
                                 'TagVarCSV_trackSip2dSigAboveCharm',
                                 'TagVarCSV_trackSip3dValAboveCharm',
                                 'TagVarCSV_trackSip3dSigAboveCharm',
-                                'TagVarCSV_jetNSelectedTracks',
-                                'TagVarCSV_jetNTracksEtaRel']
+                                'TagVarCSV_jetNTracks',
+                                'TagVarCSV_jetNTracksEtaRel'])
                 
         
-        self.cpf_branches = ['Cpfcan_BtagPf_trackEtaRel',
+        self.cpf_branches = map_prefix(['Cpfcan_BtagPf_trackEtaRel',
                              'Cpfcan_BtagPf_trackPtRel',
                              'Cpfcan_BtagPf_trackPPar',
                              'Cpfcan_BtagPf_trackDeltaR',
@@ -54,13 +176,13 @@ class TrainData_DF(TrainData):
                              'Cpfcan_VTX_ass',
                              'Cpfcan_puppiw',
                              'Cpfcan_chi2',
-                             'Cpfcan_quality']
+                             'Cpfcan_quality'])
         self.n_cpf = 25
 
-        self.npf_branches = ['Npfcan_ptrel','Npfcan_deltaR','Npfcan_isGamma','Npfcan_HadFrac','Npfcan_drminsv','Npfcan_puppiw']
+        self.npf_branches = map_prefix(['Npfcan_ptrel','Npfcan_deltaR','Npfcan_isGamma','Npfcan_HadFrac','Npfcan_drminsv','Npfcan_puppiw'])
         self.n_npf = 25
         
-        self.vtx_branches = ['sv_pt','sv_deltaR',
+        self.vtx_branches = map_prefix(['sv_pt','sv_deltaR',
                              'sv_mass',
                              'sv_ntracks',
                              'sv_chi2',
@@ -71,11 +193,11 @@ class TrainData_DF(TrainData):
                              'sv_d3dsig',
                              'sv_costhetasvpv',
                              'sv_enratio',
-        ]
+        ])
 
         self.n_vtx = 4
         
-        self.reduced_truth = ['isB','isBB','isLeptonicB','isC','isUDS','isG']
+        self.reduced_truth = map_prefix(['Jet_isB','Jet_isBB','Jet_isLeptonicB','Jet_isC','Jet_isUDS','Jet_isG'])
 
     def createWeighterObjects(self, allsourcefiles):
         # 
@@ -104,7 +226,7 @@ class TrainData_DF(TrainData):
                 fileTimeOut(fname, 120)
                 nparray = root2array(
                     fname,
-                    treename = "deepntuplizer/tree",
+                    treename = "ttree",
                     stop = None,
                     branches = branches
                 )
@@ -131,24 +253,24 @@ class TrainData_DF(TrainData):
         
         def reduceTruth(uproot_arrays):
             
-            b = uproot_arrays[b'isB']
+            b = uproot_arrays[str.encode(map_prefix('Jet_isB'))]
             
-            bb = uproot_arrays[b'isBB']
-            gbb = uproot_arrays[b'isGBB']
+            bb = uproot_arrays[str.encode(map_prefix('Jet_isBB'))]
+            gbb = uproot_arrays[str.encode(map_prefix('Jet_isGBB'))]
             
-            bl = uproot_arrays[b'isLeptonicB']
-            blc = uproot_arrays[b'isLeptonicB_C']
+            bl = uproot_arrays[map_prefix('Jet_isLeptonicB')]
+            blc = uproot_arrays[map_prefix('Jet_isLeptonicB_C')]
             lepb = bl+blc
             
-            c = uproot_arrays[b'isC']
-            cc = uproot_arrays[b'isCC']
-            gcc = uproot_arrays[b'isGCC']
+            c = uproot_arrays[map_prefix('Jet_isC')]
+            cc = uproot_arrays[map_prefix('Jet_isCC')]
+            gcc = uproot_arrays[map_prefix('Jet_isGCC')]
             
-            ud = uproot_arrays[b'isUD']
-            s = uproot_arrays[b'isS']
+            ud = uproot_arrays[map_prefix('Jet_isUD')]
+            s = uproot_arrays[map_prefix('Jet_isS')]
             uds = ud+s
             
-            g = uproot_arrays[b'isG']
+            g = uproot_arrays[map_prefix('Jet_isG')]
             
             return np.vstack((b,bb+gbb,lepb,c+cc+gcc,uds,g)).transpose()
         
@@ -158,7 +280,7 @@ class TrainData_DF(TrainData):
         from root_numpy import tree2array, root2array
         fileTimeOut(filename,120) #give eos a minute to recover
         rfile = ROOT.TFile(filename)
-        tree = rfile.Get("deepntuplizer/tree")
+        tree = rfile.Get("ttree")
         self.nsamples = tree.GetEntries()
         
         # user code, example works with the example 2D images in root format generated by make_example_data
@@ -181,7 +303,7 @@ class TrainData_DF(TrainData):
                                          self.n_vtx,self.nsamples)
         
         import uproot3 as uproot
-        urfile = uproot.open(filename)["deepntuplizer/tree"]
+        urfile = uproot.open(filename)["ttree"]
         truth_arrays = urfile.arrays(self.truth_branches)
         truth = reduceTruth(truth_arrays)
         truth = truth.astype(dtype='float32', order='C') #important, float32 and C-type!
@@ -198,12 +320,12 @@ class TrainData_DF(TrainData):
             fileTimeOut(filename, 120)
             for_remove = root2array(
                 filename,
-                treename = "deepntuplizer/tree",
+                treename = "ttree",
                 stop = None,
                 branches = b
             )
             notremoves=weighterobjects['weigther'].createNotRemoveIndices(for_remove)
-            undef=for_remove['isUndefined']
+            undef=for_remove['Jet_isUndefined']
             notremoves-=undef
             print('took ', sw.getAndReset(), ' to create remove indices')
 
@@ -232,7 +354,7 @@ class TrainData_DF(TrainData):
         
         from root_numpy import array2root
         out = np.core.records.fromarrays(np.vstack( (predicted[0].transpose(),truth[0].transpose(), features[0][:,0:2].transpose() ) ),
-                                         names='prob_isB, prob_isBB,prob_isLeptB, prob_isC,prob_isUDS,prob_isG,isB, isBB, isLeptB, isC,isUDS,isG,jet_pt, jet_eta')
+                                         names='prob_isB, prob_isBB,prob_isLeptB, prob_isC,prob_isUDS,prob_isG,Jet_isB, Jet_isBB, isLeptB, Jet_isC,Jet_isUDS,Jet_isG,Jet_pt, Jet_eta')
         array2root(out, outfilename, 'tree')
 
 class TrainData_DeepCSV(TrainData):
@@ -242,14 +364,39 @@ class TrainData_DeepCSV(TrainData):
 
         self.description = "DeepCSV training datastructure"
 
-        self.truth_branches = ['isB','isBB','isGBB','isLeptonicB','isLeptonicB_C','isC','isGCC','isCC','isUD','isS','isG']
-        self.undefTruth=['isUndefined']
-        self.weightbranchX='jet_pt'
-        self.weightbranchY='jet_eta'
+        self.truth_branches = map_prefix(['Jet_isB','Jet_isBB','Jet_isGBB','Jet_isLeptonicB','Jet_isLeptonicB_C','Jet_isC','Jet_isGCC','Jet_isCC','Jet_isUD','Jet_isS','Jet_isG', ])
+        self.undefTruth=['Jet_isUndefined']
+        self.deepcsv_branches = map_prefix(['Jet_DeepFlavourBDisc',
+                     'Jet_DeepFlavourCvsLDisc',
+                     'Jet_DeepFlavourCvsBDisc',
+                     'Jet_DeepFlavourB',
+                     'Jet_DeepFlavourBB',
+                     'Jet_DeepFlavourLEPB',
+                     'Jet_DeepFlavourC',
+                     'Jet_DeepFlavourUDS',
+                     'Jet_DeepFlavourG',
+                     'Jet_DeepCSVBDisc',
+                     'Jet_DeepCSVBDiscN',
+                     'Jet_DeepCSVCvsLDisc',
+                     'Jet_DeepCSVCvsLDiscN',
+                     'Jet_DeepCSVCvsBDisc',
+                     'Jet_DeepCSVCvsBDiscN',
+                     'Jet_DeepCSVb',
+                     'Jet_DeepCSVc',
+                     'Jet_DeepCSVl',
+                     'Jet_DeepCSVbb',
+                     'Jet_DeepCSVcc',
+                     'Jet_DeepCSVbN',
+                     'Jet_DeepCSVcN',
+                     'Jet_DeepCSVlN',
+                     'Jet_DeepCSVbbN',
+                     'Jet_DeepCSVccN'])
+        self.weightbranchX=map_prefix('Jet_pt')
+        self.weightbranchY=map_prefix('Jet_eta')
         self.remove = True
-        self.referenceclass='isB'  #Choose 'flatten' for flat or one of the truth branch for ref
-        self.red_classes = ['cat_B','cat_C','cat_UDS','cat_G'] #Reduced classes (flat only)
-        self.truth_red_fusion = [('isB','isBB','isGBB','isLeptonicB','isLeptonicB_C'),('isC','isGCC','isCC'),('isUD','isS'),('isG')] #Indicate here how you are making the fusion of your truth branches to the reduced classes for the flat reweighting
+        self.referenceclass=map_prefix('Jet_isB')  #Choose 'flatten' for flat or one of the truth branch for ref
+        self.red_classes = map_prefix(['cat_B','cat_C','cat_UDS','cat_G']) #Reduced classes (flat only)
+        self.truth_red_fusion = [map_prefix(('Jet_isB','Jet_isBB','Jet_isGBB','Jet_isLeptonicB','Jet_isLeptonicB_C')),map_prefix(('Jet_isC','Jet_isGCC','Jet_isCC')),map_prefix(('Jet_isUD','Jet_isS')),map_prefix(('Jet_isG'))] #Indicate here how you are making the fusion of your truth branches to the reduced classes for the flat reweighting
         self.class_weights = [1.00,1.00,2.50,5.00]  #Ratio between our reduced classes (flat only)
         self.weight_binX = np.array([
             10,25,30,35,40,45,50,60,75,100,
@@ -261,7 +408,7 @@ class TrainData_DeepCSV(TrainData):
             dtype=float
         )
 
-        self.global_branches = ['jet_pt', 'jet_eta',
+        self.global_branches = map_prefix(['Jet_pt', 'Jet_eta',
                                 'TagVarCSV_jetNSecondaryVertices', 
                                 'TagVarCSV_trackSumJetEtRatio',
                                 'TagVarCSV_trackSumJetDeltaR',
@@ -270,32 +417,32 @@ class TrainData_DeepCSV(TrainData):
                                 'TagVarCSV_trackSip2dSigAboveCharm',
                                 'TagVarCSV_trackSip3dValAboveCharm',
                                 'TagVarCSV_trackSip3dSigAboveCharm',
-                                'TagVarCSV_jetNSelectedTracks',
-                                'TagVarCSV_jetNTracksEtaRel']
+                                'TagVarCSV_jetNTracks',
+                                'TagVarCSV_jetNTracksEtaRel'])
 
-        self.track_branches = ['TagVarCSVTrk_trackJetDistVal',
-                              'TagVarCSVTrk_trackPtRel', 
-                              'TagVarCSVTrk_trackDeltaR', 
-                              'TagVarCSVTrk_trackPtRatio', 
-                              'TagVarCSVTrk_trackSip3dSig', 
-                              'TagVarCSVTrk_trackSip2dSig', 
-                              'TagVarCSVTrk_trackDecayLenVal']
+        self.track_branches = map_prefix(['TagVarCSV_trackJetDistVal',
+                              'TagVarCSV_trackPtRel', 
+                              'TagVarCSV_trackDeltaR', 
+                              'TagVarCSV_trackPtRatio', 
+                              'TagVarCSV_trackSip3dSig', 
+                              'TagVarCSV_trackSip2dSig', 
+                              'TagVarCSV_trackDecayLenVal'])
         self.n_track = 6
         
-        self.eta_rel_branches = ['TagVarCSV_trackEtaRel']
+        self.eta_rel_branches = map_prefix(['TagVarCSV_trackEtaRel'])
         self.n_eta_rel = 4
 
-        self.vtx_branches = ['TagVarCSV_vertexMass', 
+        self.vtx_branches = map_prefix(['TagVarCSV_vertexMass', 
                           'TagVarCSV_vertexNTracks', 
                           'TagVarCSV_vertexEnergyRatio',
                           'TagVarCSV_vertexJetDeltaR',
                           'TagVarCSV_flightDistance2dVal', 
                           'TagVarCSV_flightDistance2dSig', 
                           'TagVarCSV_flightDistance3dVal', 
-                          'TagVarCSV_flightDistance3dSig']
+                          'TagVarCSV_flightDistance3dSig'])
         self.n_vtx = 1
                 
-        self.reduced_truth = ['isB','isBB','isC','isUDSG']
+        self.reduced_truth = map_prefix(['Jet_isB','Jet_isBB','Jet_isC','Jet_isUDSG'])
 
     def readTreeFromRootToTuple(self, filenames, limit=None, branches=None):
         '''
@@ -324,15 +471,20 @@ class TrainData_DeepCSV(TrainData):
             for f in filenames:
                 fileTimeOut(f,120)
             print('add files')
-            nparray = root2array(
+            print('debugging this')
+            print("Branches:\n{}".format(usebranches))
+
+            import uproot as ur
+            import awkward as ak
+            # this was substituted from the old root2array function
+            nparray = uproot_root2array(
                 filenames, 
-                treename = "deepntuplizer/tree", 
+                treename = "ttree", 
                 stop = limit,
                 branches = usebranches
                 )
             print('done add files')
             return nparray
-            print('add files')
         else:    
             fileTimeOut(filenames,120) #give eos a minute to recover
             rfile = ROOT.TFile(filenames)
@@ -367,29 +519,33 @@ class TrainData_DeepCSV(TrainData):
         if self.remove:
             for fname in allsourcefiles:
                 fileTimeOut(fname, 120)
-                nparray = root2array(
+                nparray = uproot_root2array(
                     fname,
-                    treename = "deepntuplizer/tree",
+                    treename = "ttree",
                     stop = None,
                     branches = branches
                 )
                 norm_hist = True
                 if self.referenceclass == 'flatten':
                     norm_hist = False
+                # from IPython import embed;embed()
                 weighter.addDistributions(nparray, norm_h = norm_hist)
                 #del nparray
                 counter=counter+1
             weighter.createRemoveProbabilitiesAndWeights(self.referenceclass)
 
         print("calculate means")
+        print("debugging this point here!")
         from DeepJetCore.preprocessing import meanNormProd
         nparray = self.readTreeFromRootToTuple(allsourcefiles,branches=self.vtx_branches+self.eta_rel_branches+self.track_branches+self.global_branches, limit=500000)
+        print("read tree from sourcefiles")
         for a in (self.vtx_branches+self.eta_rel_branches+self.track_branches+self.global_branches):
             for b in range(len(nparray[a])):
                 nparray[a][b] = np.where(np.logical_and(np.isfinite(nparray[a][b]),np.abs(nparray[a][b]) < 100000.0), nparray[a][b], 0)
         means = np.array([],dtype='float32')
         if len(nparray):
             means = meanNormProd(nparray)
+        print("weigheter created")
         return {'weigther':weighter,'means':means}
     
     def convertFromSourceFile(self, filename, weighterobjects, istraining):
@@ -405,24 +561,24 @@ class TrainData_DeepCSV(TrainData):
                 
         def reduceTruth(uproot_arrays):
             
-            b = uproot_arrays[b'isB']
+            b = uproot_arrays[str.encode(map_prefix(b'Jet_isB'))]
             
-            bb = uproot_arrays[b'isBB']
-            gbb = uproot_arrays[b'isGBB']
+            bb = uproot_arrays[str.encode(map_prefix(b'Jet_isBB'))]
+            gbb = uproot_arrays[str.encode(map_prefix(b'Jet_isGBB'))]
             
-            bl = uproot_arrays[b'isLeptonicB']
-            blc = uproot_arrays[b'isLeptonicB_C']
+            bl = uproot_arrays[str.encode(map_prefix(b'Jet_isLeptonicB'))]
+            blc = uproot_arrays[str.encode(map_prefix(b'Jet_isLeptonicB_C'))]
             lepb = bl+blc
             
-            c = uproot_arrays[b'isC']
-            cc = uproot_arrays[b'isCC']
-            gcc = uproot_arrays[b'isGCC']
+            c = uproot_arrays[str.encode(map_prefix(b'Jet_isC'))]
+            cc = uproot_arrays[str.encode(map_prefix(b'Jet_isCC'))]
+            gcc = uproot_arrays[str.encode(map_prefix(b'Jet_isGCC'))]
             
-            ud = uproot_arrays[b'isUD']
-            s = uproot_arrays[b'isS']
+            ud = uproot_arrays[str.encode(map_prefix(b'Jet_isUD'))]
+            s = uproot_arrays[str.encode(map_prefix(b'Jet_isS'))]
             uds = ud+s
             
-            g = uproot_arrays[b'isG']
+            g = uproot_arrays[str.encode(map_prefix(b'Jet_isG'))]
             
             return np.vstack((b+lepb,bb+gbb,c+cc+gcc,uds+g)).transpose()
         
@@ -430,19 +586,41 @@ class TrainData_DeepCSV(TrainData):
         
         import ROOT
         from root_numpy import tree2array, root2array
-        fileTimeOut(filename,120) #give eos a minute to recover
+        fileTimeOut(filename,600) #give eos a minute to recover
         rfile = ROOT.TFile(filename)
-        tree = rfile.Get("deepntuplizer/tree")
-        self.nsamples = tree.GetEntries()  
+        # tree = rfile.Get("ttree")
+        # self.nsamples = tree.GetEntries()  
+        # from IPython import embed;embed()
+        tree = u3.open(filename)["ttree"]
+        self.nsamples = tree.numentries
+        print("Nsamples: {}".format(self.nsamples))
+
         # user code, example works with the example 2D images in root format generated by make_example_data
         from DeepJetCore.preprocessing import MeanNormZeroPad,MeanNormZeroPadParticles
-        x_global = MeanNormZeroPad(filename,weighterobjects['means'],
+        for obj in [filename,weighterobjects['means'],[self.global_branches,self.track_branches,self.eta_rel_branches,self.vtx_branches],[1,self.n_track,self.n_eta_rel,self.n_vtx],self.nsamples]:
+            print("DEBUGGING:\t{}".format(type(obj)))
+        print("DEBUGGING:\n\tPrinting MeanNormZeroPad arguments:")
+        print("\t{}\n\t{}\n\t{}".format(filename, weighterobjects['means'],self.nsamples))
+        print("reading in with new uproot+awkward function")
+        nparr = uproot_tree_to_numpy(filename, weighterobjects['means'],
                                    [self.global_branches,self.track_branches,self.eta_rel_branches,self.vtx_branches],
-                                   [1,self.n_track,self.n_eta_rel,self.n_vtx],self.nsamples)
+                                   [1,self.n_track,self.n_eta_rel,self.n_vtx],self.nsamples, treename="ttree")
+        print("succesfully created numpy array")
+        x_global = nparr
+
+        
+        # x_global = MeanNormZeroPad(filename,weighterobjects['means'],
+                                   # [self.global_branches,self.track_branches,self.eta_rel_branches,self.vtx_branches],
+                                   # [1,self.n_track,self.n_eta_rel,self.n_vtx],self.nsamples)
                 
+        print("opening file with uproot")
         import uproot3 as uproot
-        urfile = uproot.open(filename)["deepntuplizer/tree"]
+        urfile = uproot.open(filename)["ttree"]
         truth_arrays = urfile.arrays(self.truth_branches)
+        print("truth_branches:")
+        print(self.truth_branches)
+        print("truth_arrays:")
+        print(truth_arrays)
         truth = reduceTruth(truth_arrays)
         truth = truth.astype(dtype='float32', order='C') #important, float32 and C-type!
 
@@ -453,15 +631,20 @@ class TrainData_DeepCSV(TrainData):
             b.extend(self.truth_branches)
             b.extend(self.undefTruth)
             fileTimeOut(filename, 120)
-            for_remove = root2array(
+            for_remove = uproot_root2array(
                 filename,
-                treename = "deepntuplizer/tree",
+                treename = "ttree",
                 stop = None,
                 branches = b
             )
             notremoves=weighterobjects['weigther'].createNotRemoveIndices(for_remove)
-            undef=for_remove['isUndefined']
-            notremoves-=undef
+            undef=for_remove['Jet_isUndefined']
+            print("\nundef:")
+            print(undef)
+            print("undef dtype: ", undef.dtype)
+            print()
+            print(notremoves)
+            notremoves -= np.array(undef, dtype=np.float32)
             print('took ', sw.getAndReset(), ' to create remove indices')
 
         if self.remove:
@@ -479,19 +662,20 @@ class TrainData_DeepCSV(TrainData):
     ## defines how to write out the prediction
     def writeOutPrediction(self, predicted, features, truth, weights, outfilename, inputfile):
         # predicted will be a list
-        spectator_branches = ['jet_pt','jet_eta']
+        spectator_branches = ['Jet_pt','Jet_eta']
+        spectator_branches += self.deepcsv_branches
         from root_numpy import array2root
-        if inputfile[-5:] == 'djctd':
-                        print("storing normed pt and eta... run on root files if you want something else for now")
-                        spectators = features[0][:,0:2].transpose()
-        else:
-            import uproot3 as uproot
-            print(inputfile)
-            urfile = uproot.open(inputfile)["deepntuplizer/tree"]
-            spectator_arrays = urfile.arrays(spectator_branches)
-            print(spectator_arrays)
-            spectators = [spectator_arrays[a.encode()] for a in spectator_branches]
+        # if inputfile[-5:] == 'djctd':
+            # print("storing normed pt and eta... run on root files if you want something else for now")
+            # spectators = features[0][:,0:2].transpose()
+        # else:
+        import uproot3 as uproot
+        print(inputfile)
+        urfile = uproot.open(inputfile)["ttree"]
+        spectator_arrays = urfile.arrays(spectator_branches)
+        print(spectator_arrays)
+        spectators = [spectator_arrays[a.encode()] for a in spectator_branches]
         
         out = np.core.records.fromarrays(np.vstack( (predicted[0].transpose(),truth[0].transpose(), spectators) ),
-                                         names='prob_isB, prob_isBB, prob_isC,prob_isUDSG,isB, isBB, isC,isUDSG,jet_pt, jet_eta')
+                                         names='prob_isB, prob_isBB, prob_isC,prob_isUDSG,Jet_isB, Jet_isBB, Jet_isC,Jet_isUDSG,Jet_pt,Jet_eta,'+",".join(map(str, self.deepcsv_branches)))
         array2root(out, outfilename, 'tree')
